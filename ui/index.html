@@ -1,1 +1,274 @@
-<!doctype html><title>Cue</title><p>UI coming in Phase 5</p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cue AAC</title>
+<style>
+  :root { --bg:#0d0f14; --panel:#181c25; --line:#2c3344; --fg:#f4f6fb; --muted:#9aa3b8;
+          --accent:#ffd23f; --ok:#3ddc84; --warn:#ffb020; --err:#ff5c5c; --tile:#243049; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.35 system-ui, "Segoe UI", sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:22px; margin:0 12px 0 0; }
+  .pill { padding:4px 10px; border-radius:999px; background:var(--panel); border:1px solid var(--line); font-size:14px; }
+  .pill.ok { border-color:var(--ok); color:var(--ok); } .pill.bad { border-color:var(--err); color:var(--err); }
+  main { display:grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap:16px; padding:16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding:12px 16px; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; min-width:0; }
+  h2 { font-size:16px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; }
+  .col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  #preview { width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; border-radius:10px; display:block; }
+  button { font:inherit; color:var(--fg); background:var(--tile); border:2px solid var(--line); border-radius:12px;
+           min-height:56px; padding:8px 16px; cursor:pointer; touch-action:manipulation; }
+  button:active { transform:scale(.97); }
+  button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  #capture { width:100%; margin-top:12px; min-height:84px; font-size:28px; font-weight:700; background:var(--accent); color:#111; border:none; }
+  #capture[disabled] { opacity:.5; }
+  .det { display:flex; gap:14px; align-items:center; }
+  .det img { width:140px; height:105px; object-fit:cover; border-radius:10px; background:#000; flex:none; }
+  .det .word { font-size:44px; font-weight:800; overflow-wrap:anywhere; }
+  .det .meta { color:var(--muted); font-size:14px; }
+  .tiles { display:flex; flex-wrap:wrap; gap:10px; }
+  .tiles button { font-size:22px; font-weight:600; min-width:96px; }
+  .tiles button.starter { background:#2d2346; }
+  #sentence { min-height:72px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px;
+              border:2px dashed var(--line); border-radius:12px; font-size:30px; font-weight:700; margin-bottom:10px; }
+  #sentence:empty::before { content:"Tap tiles to build a sentence"; color:var(--muted); font-size:18px; font-weight:400; }
+  #sentence span { background:var(--tile); padding:2px 10px; border-radius:8px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .row button { flex:1 1 120px; font-size:22px; font-weight:700; }
+  #speak { background:#1f5f3a; border-color:var(--ok); } #send { background:#1d3f6e; border-color:#5aa0ff; }
+  #msg { margin-top:8px; color:var(--muted); min-height:1.3em; font-size:15px; }
+  #log { max-height:260px; overflow:auto; font:14px/1.5 ui-monospace, Consolas, monospace; }
+  #log div { border-bottom:1px solid var(--line); padding:2px 0; overflow-wrap:anywhere; }
+  .s-ok { color:var(--ok); } .s-none { color:var(--warn); } .s-busy { color:var(--muted); } .s-error { color:var(--err); }
+  details summary { cursor:pointer; font-size:16px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); min-height:32px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin-top:10px; }
+  .grid label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
+  .grid input, .grid select { font:inherit; font-size:16px; color:var(--fg); background:var(--bg); border:1px solid var(--line);
+           border-radius:8px; min-height:40px; padding:4px 8px; width:100%; }
+  .grid input[type=checkbox] { width:28px; min-height:28px; }
+  #camstatus { margin-top:10px; font:13px/1.4 ui-monospace, Consolas, monospace; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>👆 Cue</h1>
+  <span id="p-ws" class="pill bad">offline</span>
+  <span id="p-cam" class="pill">camera ?</span>
+  <span id="p-cv" class="pill">cv ?</span>
+  <span id="p-ntfy" class="pill">messaging ?</span>
+</header>
+
+<main>
+  <div class="col">
+    <section>
+      <img id="preview" alt="Live camera preview" src="/preview.mjpg">
+      <button id="capture">📸 Capture</button>
+    </section>
+
+    <section>
+      <h2>Detected</h2>
+      <div class="det">
+        <img id="det-img" alt="">
+        <div>
+          <div class="word" id="det-word">—</div>
+          <div class="meta" id="det-meta">Press the ring button or Capture</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <details id="camdetails">
+        <summary>Camera settings</summary>
+        <div class="grid" id="camform">
+          <label>Index <select name="camera_index"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label>Backend <select name="backend"><option>DSHOW</option><option>MSMF</option><option>ANY</option></select></label>
+          <label>Resolution <select name="res"><option value="1280x720">1280×720</option><option value="640x480">640×480</option><option value="1920x1080">1920×1080</option></select></label>
+          <label>MJPG <input type="checkbox" name="mjpg"></label>
+          <label>Rotate <select name="rotate"><option>0</option><option>90</option><option>180</option><option>270</option></select></label>
+          <label>Flip <select name="flip"><option value="none">none</option><option value="h">horizontal</option><option value="v">vertical</option></select></label>
+          <label>Zoom <span id="zoomv"></span><input type="range" name="zoom" min="1" max="3" step="0.1"></label>
+          <label>Brightness (blank = default) <input type="number" name="brightness" step="1"></label>
+          <label>Auto exposure <input type="checkbox" name="exposure_auto"></label>
+          <label>Exposure (manual) <input type="number" name="exposure" step="1"></label>
+          <label>Sharpness (blank = default) <input type="number" name="sharpness" step="1"></label>
+          <label>Warm-up frames <input type="number" name="warmup_frames" min="0" max="60"></label>
+          <label>Burst N <input type="number" name="burst_n" min="1" max="30"></label>
+          <label>Burst gap ms <input type="number" name="burst_gap_ms" min="0" max="1000" step="10"></label>
+        </div>
+        <div id="camstatus"></div>
+      </details>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Sentence</h2>
+      <div id="sentence" aria-live="polite"></div>
+      <div class="row">
+        <button id="speak">🔊 Speak</button>
+        <button id="send">📨 Send</button>
+        <button id="undo">⌫</button>
+        <button id="clear">Clear</button>
+      </div>
+      <div id="msg"></div>
+    </section>
+
+    <section>
+      <h2>Starters</h2>
+      <div class="tiles" id="starters"></div>
+    </section>
+
+    <section>
+      <h2>Recent words</h2>
+      <div class="tiles" id="recent"></div>
+    </section>
+
+    <section>
+      <h2>Event log</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const STARTERS = ["I want", "I see", "Where is", "Help", "Yes", "No"];
+let sentence = [];
+const recentWords = [];
+
+// ---------- sentence builder ----------
+function renderSentence() {
+  const el = $("#sentence"); el.innerHTML = "";
+  sentence.forEach(w => { const s = document.createElement("span"); s.textContent = w; el.appendChild(s); });
+}
+function addWord(w) { sentence.push(w); renderSentence(); }
+function tile(text, cls) {
+  const b = document.createElement("button"); b.textContent = text; if (cls) b.className = cls;
+  b.onclick = () => addWord(text);
+  return b;
+}
+STARTERS.forEach(s => $("#starters").appendChild(tile(s, "starter")));
+function addRecent(word, emoji) {
+  if (!word) return;
+  const i = recentWords.indexOf(word); if (i >= 0) recentWords.splice(i, 1);
+  recentWords.unshift(word); recentWords.length = Math.min(recentWords.length, 12);
+  const box = $("#recent"); box.innerHTML = "";
+  recentWords.forEach(w => {
+    const b = document.createElement("button"); b.textContent = (emojiOf[w] ? emojiOf[w] + " " : "") + w;
+    b.onclick = () => addWord(w); box.appendChild(b);
+  });
+}
+const emojiOf = {};
+
+$("#undo").onclick = () => { sentence.pop(); renderSentence(); };
+$("#clear").onclick = () => { sentence = []; renderSentence(); };
+const text = () => sentence.join(" ").trim();
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let j = {}; try { j = await r.json(); } catch {} return { ok: r.ok, j };
+}
+$("#speak").onclick = async () => {
+  if (!text()) return msg("Nothing to speak yet");
+  const { j } = await post("/speak", { text: text() });
+  msg(j.spoken ? `Speaking: “${j.text}”` : `Not spoken (${j.detail || "TTS disabled"})`);
+};
+$("#send").onclick = async () => {
+  if (!text()) return msg("Nothing to send yet");
+  const { j } = await post("/send", { text: text() });
+  msg(j.sent ? `Sent to caregiver (${j.topic}) ✓` : `Not sent: ${j.reason || j.detail || "error"}`);
+};
+function msg(t) { $("#msg").textContent = t; }
+
+// ---------- capture ----------
+$("#capture").onclick = async () => {
+  $("#capture").disabled = true;
+  try { const { j } = await post("/trigger", { source: "ui", ts: Date.now() }); if (j.status === "busy") msg("Busy, try again"); }
+  catch (e) { msg("Server unreachable"); }
+  finally { setTimeout(() => $("#capture").disabled = false, 400); }
+};
+
+// ---------- event log ----------
+function logEvent(ev) {
+  const d = document.createElement("div");
+  const t = new Date(ev.server_ts || ev.ts || Date.now()).toLocaleTimeString();
+  d.innerHTML = `${t} <b>${ev.source}</b> <span class="s-${ev.status}">${ev.status}</span> `;
+  d.appendChild(document.createTextNode(ev.label || ev.error || ""));
+  $("#log").prepend(d);
+  while ($("#log").children.length > 200) $("#log").lastChild.remove();
+}
+
+// ---------- detection ----------
+function showDetection(d) {
+  $("#det-img").src = d.image_url || "";
+  $("#det-word").textContent = d.status === "ok" ? `${d.emoji ? d.emoji + " " : ""}${d.word}` : "nothing found";
+  $("#det-meta").textContent = `${d.source} · ${(d.confidence * 100).toFixed(0)}% · ${d.ms} ms`;
+  if (d.status === "ok") { emojiOf[d.word] = d.emoji; addRecent(d.word); }
+}
+
+// ---------- status ----------
+function setPill(id, text, good) { const p = $(id); p.textContent = text; p.className = "pill " + (good ? "ok" : "bad"); }
+function showCamStatus(c) {
+  if (!c) return;
+  setPill("#p-cam", c.camera ? `camera ${c.source} #${c.index}` : "camera DOWN", c.camera);
+  const props = Object.entries(c.props || {}).map(([k, v]) => `${k}: ${v.accepted ? "accepted" : "IGNORED"} (readback ${v.readback})`).join("\n");
+  $("#camstatus").textContent =
+    `actual: ${c.actual_width}x${c.actual_height} via ${c.backend}  reconnects: ${c.reconnects}` +
+    (c.black_frame ? "\n⚠ BLACK FRAMES (wrong lens/index? too dark?)" : "") +
+    (c.error ? `\n⚠ ${c.error}` : "") + (props ? "\n" + props : "");
+}
+
+// ---------- camera settings ----------
+const form = $("#camform");
+function fillForm(s) {
+  for (const el of form.querySelectorAll("[name]")) {
+    if (el.name === "res") { el.value = `${s.width}x${s.height}`; continue; }
+    const v = s[el.name];
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v === null || v === undefined ? "" : v;
+  }
+  $("#zoomv").textContent = `${Number(s.zoom).toFixed(1)}×`;
+}
+async function loadSettings() {
+  const r = await fetch("/camera/settings"); const j = await r.json(); fillForm(j.settings); showCamStatus(j.status);
+}
+form.addEventListener("change", async (e) => {
+  const el = e.target; let body = {};
+  if (el.name === "res") { const [w, h] = el.value.split("x").map(Number); body = { width: w, height: h }; }
+  else if (el.type === "checkbox") body[el.name] = el.checked;
+  else if (el.value === "" ) body[el.name] = null;
+  else body[el.name] = isNaN(Number(el.value)) ? el.value : Number(el.value);
+  const { ok, j } = await post("/camera/settings", body);
+  if (!ok) { msg(`Setting rejected: ${j.detail}`); return loadSettings(); }
+  fillForm(j.settings); showCamStatus(j.status);
+  // reload preview so a reopened camera / new size shows up
+  if (["camera_index", "backend", "width", "mjpg"].some(k => k in body)) $("#preview").src = "/preview.mjpg?t=" + Date.now();
+});
+form.querySelector("[name=zoom]").addEventListener("input", (e) => $("#zoomv").textContent = `${Number(e.target.value).toFixed(1)}×`);
+loadSettings().catch(() => {});
+
+// ---------- websocket ----------
+function connect() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => setPill("#p-ws", "live", true);
+  ws.onclose = () => { setPill("#p-ws", "offline", false); setTimeout(connect, 1500); };
+  ws.onmessage = (m) => {
+    const d = JSON.parse(m.data);
+    if (d.type === "detection") showDetection(d);
+    else if (d.type === "event") logEvent(d);
+    else if (d.type === "status") {
+      showCamStatus(d.camera);
+      if (d.cv_mode) setPill("#p-cv", `cv ${d.cv_mode}`, true);
+      if (d.ntfy !== undefined) setPill("#p-ntfy", d.ntfy ? "messaging on" : "messaging off", d.ntfy);
+      if (d.events) { $("#log").innerHTML = ""; d.events.forEach(logEvent); }
+      if (d.recent) d.recent.forEach(r => { emojiOf[r.word] = r.emoji; addRecent(r.word); });
+    }
+  };
+}
+connect();
+// keep the preview alive if the stream drops (e.g. camera reconnect)
+$("#preview").onerror = () => setTimeout(() => $("#preview").src = "/preview.mjpg?t=" + Date.now(), 1500);
+</script>
+</body>
+</html>
