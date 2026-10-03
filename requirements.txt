@@ -4,3 +4,4 @@ opencv-python>=4.8
 numpy>=1.24
 requests>=2.31
 pyttsx3>=2.90
+python-multipart>=0.0.9   # only for tools/dummy_cv_server.py

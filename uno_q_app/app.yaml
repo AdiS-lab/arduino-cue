@@ -1,0 +1,3 @@
+name: arduino-cue
+icon: 👆
+description: Wireless button/buzzer for the arduino-cue AAC ring. Sends button presses to the laptop over Wi-Fi and beeps the result. UNTESTED ON HARDWARE.
