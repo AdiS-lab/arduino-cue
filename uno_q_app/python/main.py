@@ -7,7 +7,7 @@
 # This same file is imported by tools/mock_unoq.py on the laptop with a fake Bridge.
 
 # ============================ EDIT THIS ============================
-LAPTOP_IP = "192.168.137.1"   # laptop's IP on the phone hotspot (server.py prints it at startup)
+LAPTOP_IP = "172.20.10.2"     # laptop IP on the phone hotspot: server.py prints it (iPhone 172.20.10.x, Android often 192.168.x.x / 10.x.x.x)
 PORT = 8000
 # ===================================================================
 HTTP_TIMEOUT_S = 5.0
@@ -107,7 +107,8 @@ def health_check_loop(max_tries=None):
             return True
         print(f"laptop NOT reachable at {base_url()} ({r.get('status')}: {r.get('detail', '')}); retry in {HEALTH_RETRY_S:.0f}s")
         beep("boot_fail")
-        time.sleep(HEALTH_RETRY_S)
+        if max_tries is None or tries < max_tries:
+            time.sleep(HEALTH_RETRY_S)
     return False
 
 

@@ -5,7 +5,7 @@ Wireless ring button. Button D2 → MCU → Bridge → Linux Python → `POST ht
 ## Configure
 Edit the top of `python/main.py`:
 ```python
-LAPTOP_IP = "192.168.137.1"   # the laptop's hotspot IP (server.py prints it at startup)
+LAPTOP_IP = "172.20.10.2"     # the laptop's hotspot IP (server.py prints it at startup)
 PORT = 8000
 ```
 Button wiring and the optional clap trigger are set at the top of `sketch/sketch.ino` (`BUTTON_WIRING`, `CLAP_ENABLED`).
