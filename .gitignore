@@ -1,0 +1,9 @@
+captures/
+probe/
+camera_settings.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.zip
