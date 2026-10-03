@@ -9,12 +9,12 @@ def detect(frames: list["np.ndarray"]) -> dict:
     """Input: list of BGR frames (burst). Output: {"label": str, "confidence": float} or {"label": "", "confidence": 0.0} if nothing found."""
 ```
 - `frames`: a burst of `BURST_N` (default 5) OpenCV **BGR** `uint8` images taken `BURST_GAP_MS` (default 100 ms) apart.
-  They are already rotated, flipped and zoomed per the UI camera settings. The resolution is the camera's actual one (typically 1280×720 or 640×480).
+  They are already rotated, flipped and zoomed per the UI camera settings. The resolution is the camera's actual one: ESP32-CAM 640×480 by default (`framesize` in the UI), USB backup typically 1280×720.
 - Return the single best label for the burst. You might vote across frames, or pick the sharpest frame.
-- Return `{"label": "", "confidence": 0.0}` for "nothing found". The ring then plays 2 short beeps.
-- **Time budget: ≤ ~3.5 s total.** The server aborts the pipeline at 4.5 s (the UNO Q gives up at 5 s, and burst capture takes ~0.5 s).
+- Return `{"label": "", "confidence": 0.0}` for "nothing found". The ring then vibrates 2 short pulses.
+- **Time budget: ≤ ~3 s.** The server aborts the pipeline at 4.5 s (the ring gives up at 5 s). Burst capture takes ~0.5 s from a USB camera, ~1–1.5 s from the ESP32 over Wi-Fi.
 - Labels are shown and spoken as-is. To change a word or add an emoji, edit `laptop/labels.py` (e.g. `"bottle" → "water 💧"`). This is optional.
-- If your code raises, the server returns `status: "error"` and the ring plays a long beep.
+- If your code raises, the server returns `status: "error"` and the ring vibrates one long pulse.
 
 ## The three modes (`CV_MODE` env var)
 | Mode | What happens | Config |

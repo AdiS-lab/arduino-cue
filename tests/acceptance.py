@@ -29,7 +29,8 @@ def report(name, ok, detail=""):
 
 
 def start_server(port, **env):
-    e = dict(os.environ, CAMERA_SOURCE="mock", PORT=str(port), PYTHONUNBUFFERED="1", **env)
+    e = dict(os.environ, CAMERA_SOURCE="mock", PORT=str(port), PYTHONUNBUFFERED="1")
+    e.update(env)
     p = subprocess.Popen([PY, str(ROOT / "laptop" / "server.py")], env=e, cwd=ROOT,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     for _ in range(60):
@@ -97,7 +98,7 @@ def main():
         u = mock_unoq.load_unoq("127.0.0.1", 8101)
         healthy = u.health_check_loop(max_tries=1)
         pat = u.handle_trigger("button", 1)
-        report("4b mock_unoq -> ok + label (1 short beep)", healthy and pat == "ok" and u.Bridge.played[-1] == "ok")
+        report("4b mock_unoq -> ok + label (1 pulse)", healthy and pat == "ok" and u.Bridge.played[-1] == "ok")
 
         # 5. 5 rapid triggers -> exactly 1 processed
         with cf.ThreadPoolExecutor(5) as ex:
@@ -144,10 +145,12 @@ def main():
         ntfy.shutdown()
         ui_test(base)
 
-        # 9. UNO Q app: laptop unreachable -> long beep + log line
+        # 9. UNO Q app: laptop unreachable -> long pulse + log line
         u2 = mock_unoq.load_unoq("127.0.0.1", 8199)
         pat = u2.handle_trigger("button", 1)
-        report("9 UNO Q 'laptop unreachable' -> 1 long beep", pat == "error" and u2.Bridge.played == ["error"])
+        report("9 UNO Q 'laptop unreachable' -> 1 long pulse", pat == "error" and u2.Bridge.played == ["error"])
+
+        esp32_tests(procs)
     finally:
         for p in procs:
             p.kill()
@@ -156,6 +159,114 @@ def main():
     fails = [n for n, ok in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(fails)}/{len(RESULTS)} passed" + (f"; FAILED: {fails}" if fails else ""))
     sys.exit(1 if fails else 0)
+
+
+def compile_test():
+    """E1: compile both ESP32 sketches with arduino-cli if available (set ARDUINO_CLI to its path)."""
+    import shutil
+    import tempfile
+    cli = os.environ.get("ARDUINO_CLI") or shutil.which("arduino-cli")
+    if not cli:
+        report("E1 ESP32 firmware compile (arduino-cli not found: NOT COMPILED, SKIPPED)", True)
+        return
+    extra = os.environ.get("ARDUINO_CLI_EXTRA", "").split()
+    for sk in ("esp32cam_selftest", "esp32cam_firmware"):
+        with tempfile.TemporaryDirectory() as td:
+            dst = Path(td) / sk
+            shutil.copytree(ROOT / sk, dst)
+            if (dst / "secrets.example.h").exists() and not (dst / "secrets.h").exists():
+                shutil.copy(dst / "secrets.example.h", dst / "secrets.h")
+            r = subprocess.run([cli, "compile", "-b", "esp32:esp32:esp32cam", *extra, str(dst)],
+                               capture_output=True, text=True, timeout=1200)
+            size = next((l for l in r.stdout.splitlines() if l.startswith("Sketch uses")), r.stderr[-300:])
+            report(f"E1 {sk} compiles for esp32:esp32:esp32cam (UNTESTED ON HARDWARE)", r.returncode == 0, size)
+
+
+def esp32_tests(procs):
+    import cv2
+    import numpy as np
+    import mock_ring
+    sys.path.insert(0, str(ROOT / "laptop"))
+    mock = subprocess.Popen([PY, str(ROOT / "tools" / "mock_esp32_server.py"), "--port", "8150"], cwd=ROOT,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    procs.append(mock)
+    m = "http://127.0.0.1:8150"
+    for _ in range(40):
+        try:
+            requests.get(m + "/status", timeout=1); break
+        except Exception:
+            time.sleep(0.25)
+    procs.append(start_server(8105, CAMERA_SOURCE="esp32", ESP32_IP="127.0.0.1", ESP32_HTTP_PORT="8150",
+                              ESP32_STREAM_PORT="8151", CV_MODE="mock"))
+    base = "http://127.0.0.1:8105"
+    for _ in range(40):
+        if requests.get(base + "/health").json()["camera"]:
+            break
+        time.sleep(0.25)
+    h = requests.get(base + "/health").json()
+    report("E2 /health reports camera_source=esp32 and camera up (mock ESP32)", h.get("camera_source") == "esp32" and h["camera"], str(h))
+
+    # preview works: first MJPEG part decodes
+    with requests.get(base + "/preview.mjpg", stream=True, timeout=5) as r:
+        buf = b""
+        for chunk in r.iter_content(8192):
+            buf += chunk
+            a, b = buf.find(b"\xff\xd8"), buf.find(b"\xff\xd9")
+            if a >= 0 and b > a:
+                break
+    img = cv2.imdecode(np.frombuffer(buf[a:b + 2], np.uint8), cv2.IMREAD_COLOR)
+    report("E3 preview.mjpg streams frames from ESP32 /stream", img is not None, f"{None if img is None else img.shape}")
+
+    # snapshot burst (keyboard trigger) -> 5 frames saved + /haptic called with the result
+    requests.post(m + "/_reset")
+    r = trig(8105, "keyboard")
+    files = sorted((ROOT / "captures").glob(f"{r['capture_id']}_*.jpg"))
+    calls = requests.get(m + "/_calls").json()
+    report("E4 CAMERA_SOURCE=esp32 snapshot burst saves 5 frames", r["status"] == "ok" and len(files) == 5, f"{r} files={len(files)}")
+    report("E5 keyboard trigger -> ESP32 /haptic?pattern=ok", [c["pattern"] for c in calls["haptic"]] == ["ok"], str(calls["haptic"]))
+
+    # ring button (mock_ring) -> ok + label, and NO /haptic call (the ring vibrates by itself)
+    requests.post(m + "/_reset")
+    time.sleep(0.2)
+    pat = mock_ring.press(base, 1)
+    calls = requests.get(m + "/_calls").json()
+    ev = requests.get(base + "/device").json()["last_trigger"]
+    report("E6 mock_ring.py -> ok + label, device=esp32cam, no /haptic echo", pat == "ok" and ev["device"] == "esp32cam"
+           and ev["label"] and calls["haptic"] == [], f"{ev}")
+
+    # ble_remote + ui -> /haptic
+    import ble_remote
+    requests.post(m + "/_reset")
+    r1 = ble_remote.on_key("volume up", url=base + "/trigger")
+    r_ignored = ble_remote.on_key("volume up", url=base + "/trigger")      # within cooldown -> ignored
+    r_other = ble_remote.on_key("a", url=base + "/trigger", now=time.time() + 10)  # not a configured key
+    r2 = trig(8105, "ui")
+    calls = requests.get(m + "/_calls").json()
+    report("E7 ble_remote (+cooldown, key filter) and ui triggers -> /haptic called", r1["status"] == "ok" and r_ignored is None
+           and r_other is None and r2["status"] == "ok" and [c["pattern"] for c in calls["haptic"]] == ["ok", "ok"], str(calls["haptic"]))
+
+    # /camera/settings forwards to ESP32 /control and changes the frames
+    requests.post(m + "/_reset")
+    res = requests.post(base + "/camera/settings", json={"framesize": 5, "quality": 20, "brightness": 1, "contrast": -1,
+                                                       "hmirror": True, "vflip": False}).json()
+    calls = requests.get(m + "/_calls").json()["control"]
+    sent = {c["var"]: c["val"] for c in calls}
+    props = res["status"]["props"]
+    r = trig(8105, "keyboard")
+    shot = cv2.imread(str(sorted((ROOT / "captures").glob(f"{r['capture_id']}_*.jpg"))[0]))
+    ok = sent == {"framesize": 5, "quality": 20, "brightness": 1, "contrast": -1, "hmirror": 1, "vflip": 0} \
+        and all(v["accepted"] for v in props.values()) and shot.shape[:2] == (240, 320)
+    report("E8 /camera/settings forwards framesize/quality/brightness/contrast/hmirror/vflip to /control", ok,
+           f"sent={sent} burst frame={shot.shape[:2]}")
+    requests.post(base + "/camera/settings", json={"framesize": None, "quality": None, "brightness": None,
+                                                   "contrast": None, "hmirror": None, "vflip": None})
+
+    # haptic test button endpoint + ESP32 unreachable -> haptic fails gracefully, trigger -> error
+    hres = requests.post(base + "/device/haptic", json={"pattern": "none"}).json()
+    mock.kill(); time.sleep(0.5)
+    hres2 = requests.post(base + "/device/haptic", json={"pattern": "error"}).json()
+    report("E9 /device/haptic works; ESP32 down -> {ok:false} (no crash)", hres["ok"] and not hres2["ok"], f"{hres} / {hres2}")
+    compile_test()
 
 
 def ui_test(base):

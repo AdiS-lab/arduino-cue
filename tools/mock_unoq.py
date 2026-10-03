@@ -1,5 +1,5 @@
-"""Simulate the wireless UNO Q button on the laptop. It runs the REAL uno_q_app/python/main.py logic
-with a fake Bridge that prints the beeps instead of playing them.
+"""Simulate the UNO Q ring button (BACKUP wearable) on the laptop. It runs the REAL uno_q_app/python/main.py logic
+with a fake Bridge that prints the vibration pulses instead of playing them.
 
     python tools\\mock_unoq.py                      # health check, then press Enter = button press
     python tools\\mock_unoq.py --presses 3          # 3 presses, 2 s apart, then exit
@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 MAIN = Path(__file__).resolve().parent.parent / "uno_q_app" / "python" / "main.py"
-BEEPS = {"ok": "beep (1 short)", "none": "beep beep (2 short)", "error": "BEEEEEP (1 long)",
-         "boot_fail": "beep beep beep (3 short)", "silent": "(no beep: busy)"}
+PULSES = {"ok": "bzz (1 x 150 ms)", "none": "bz bz (2 x 100 ms)", "error": "BZZZZZZ (1 x 600 ms)",
+         "boot_fail": "bz bz bz (3 pulses)", "silent": "(no vibration: busy)"}
 
 
 class FakeBridge:
@@ -22,7 +22,7 @@ class FakeBridge:
     def notify(self, name, *args):
         if name == "play":
             self.played.append(args[0])
-            print(f"   [MCU buzzer] {BEEPS.get(args[0], args[0])}")
+            print(f"   [MCU motor] {PULSES.get(args[0], args[0])}")
 
     def provide(self, name, fn):
         pass
@@ -49,7 +49,7 @@ def main():
     a = ap.parse_args()
     u = load_unoq(a.ip, a.port)
     print(f"Mock UNO Q -> {u.base_url()}")
-    print("[MCU buzzer] beep (boot)")
+    print("[MCU motor] bzz (boot pulse)")
     u.health_check_loop(max_tries=1)
     n = 0
     if a.presses:

@@ -1,6 +1,6 @@
-# arduino-cue main UNO Q app (UNTESTED ON HARDWARE)
+# arduino-cue UNO Q ring app: BACKUP wearable (UNTESTED ON HARDWARE)
 
-Wireless ring button. Button D2 → MCU → Bridge → Linux Python → `POST http://LAPTOP_IP:PORT/trigger` → beep.
+Wireless ring button. Button D2 → MCU → Bridge → Linux Python → `POST http://LAPTOP_IP:PORT/trigger` → vibration pulse. Camera = USB (Inland/C270) on the laptop, `CAMERA_SOURCE=usb`.
 
 ## Configure
 Edit the top of `python/main.py`:
@@ -10,15 +10,15 @@ PORT = 8000
 ```
 Button wiring and the optional clap trigger are set at the top of `sketch/sketch.ino` (`BUTTON_WIRING`, `CLAP_ENABLED`).
 
-## Beep meanings
-| Beep | Meaning |
+## Vibration meanings (motor module on D3)
+| Vibration | Meaning |
 |---|---|
-| 1 short at power-on | MCU booted (no network needed) |
-| 3 short, repeating every ~5 s | laptop `/health` not reachable (wrong IP, server not running, firewall, different Wi-Fi) |
-| 1 short after a press | `ok`: a word was detected |
-| 2 short | `none`: nothing recognised |
-| no beep | `busy`: a capture was already running |
-| 1 long (600 ms) | `error`, timeout > 5 s, or laptop unreachable. Python logs `BUTTON OK, LAPTOP UNREACHABLE`. The MCU also plays this on its own if Linux never answers within 6.5 s. |
+| 1 pulse at power-on | MCU booted (no network needed) |
+| 3 pulses, repeating every ~5 s | laptop `/health` not reachable (wrong IP, server not running, firewall, different Wi-Fi) |
+| 1 × 150 ms after a press | `ok`: a word was detected |
+| 2 × 100 ms | `none`: nothing recognised |
+| nothing | `busy`: a capture was already running |
+| 1 × 600 ms | `error`, timeout > 5 s, or laptop unreachable. Python logs `BUTTON OK, LAPTOP UNREACHABLE`. The MCU also plays this on its own if Linux never answers within 6.5 s. |
 
 ## Run without the laptop cable (power bank + hotspot)
 1. First time only: connect over USB-C, then use the App Lab wizard to join the **phone hotspot** (WPA2; captive portals are not supported).

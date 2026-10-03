@@ -1,7 +1,7 @@
-# arduino-cue main UNO Q app (Linux side). UNTESTED ON HARDWARE.
+# arduino-cue UNO Q ring app (Linux side). BACKUP wearable (primary is the ESP32-CAM). UNTESTED ON HARDWARE.
 #
 # MCU sketch --Bridge.notify("button_pressed", n)--> on_button() --HTTP POST /trigger--> laptop
-# laptop response --> beep(pattern) --Bridge.notify("play", pattern)--> MCU buzzer
+# laptop response --> haptic(pattern) --Bridge.notify("play", pattern)--> MCU vibration motor
 #
 # Uses only the Python standard library (urllib), so no requirements.txt is needed.
 # This same file is imported by tools/mock_unoq.py on the laptop with a fake Bridge.
@@ -20,13 +20,13 @@ import urllib.error
 import urllib.request
 
 try:
-    from arduino.app_utils import App, Bridge   # confirmed import path (docs/UNO_Q_NOTES.md)
+    from arduino.app_utils import App, Bridge   # confirmed import path (docs/HARDWARE_NOTES.md)
     ON_BOARD = True
 except ImportError:                              # running on a laptop (tools/mock_unoq.py)
     App = Bridge = None
     ON_BOARD = False
 
-# status -> MCU beep pattern (MCU sketch implements: ok, none, error, silent, boot_fail)
+# status -> MCU vibration pattern (MCU sketch implements: ok, none, error, silent, boot_fail)
 PATTERN = {"ok": "ok", "none": "none", "busy": "silent", "error": "error",
            "timeout": "error", "unreachable": "error"}
 
@@ -37,8 +37,8 @@ def base_url():
     return f"http://{LAPTOP_IP}:{PORT}"
 
 
-def beep(pattern: str):
-    """The ONE function that talks to the MCU buzzer. Edit here if the Bridge call differs on hardware."""
+def haptic(pattern: str):
+    """The ONE function that talks to the MCU vibration motor. Edit here if the Bridge call differs on hardware."""
     Bridge.notify("play", pattern)
 
 
@@ -62,22 +62,22 @@ def http_json(method: str, path: str, body=None, timeout=HTTP_TIMEOUT_S) -> dict
 
 
 def handle_trigger(source: str, n=0) -> str:
-    """POST /trigger, beep the result, and return the pattern played."""
-    resp = http_json("POST", "/trigger", {"source": source, "ts": int(time.time() * 1000)})
+    """POST /trigger, vibrate the result, and return the pattern played."""
+    resp = http_json("POST", "/trigger", {"source": source, "device": "unoq", "ts": int(time.time() * 1000)})
     status = resp.get("status", "error")
     pattern = PATTERN.get(status, "error")
     if status in ("unreachable", "timeout"):
-        print(f"BUTTON OK, LAPTOP UNREACHABLE ({status}: {resp.get('detail', '')}) -> long beep")
+        print(f"BUTTON OK, LAPTOP UNREACHABLE ({status}: {resp.get('detail', '')}) -> long pulse")
     else:
         print(f"[{source} #{n}] -> {status} label={resp.get('label', '')!r} conf={resp.get('confidence', 0)}")
-    beep(pattern)
+    haptic(pattern)
     return pattern
 
 
 def _run_once(source, n):
     if not _in_flight.acquire(blocking=False):
         print(f"[{source} #{n}] ignored: previous request still running")
-        beep("silent")   # tell the MCU a reply arrived, so it does not play its own fallback beep
+        haptic("silent")   # tell the MCU a reply arrived, so it does not play its own fallback pulse
         return
     try:
         handle_trigger(source, n)
@@ -95,7 +95,7 @@ def on_clap(value=0):
 
 
 def health_check_loop(max_tries=None):
-    """At boot: GET /health. On failure: 3 short beeps, retry every 5 s. On success: done."""
+    """At boot: GET /health. On failure: 3 pulses, retry every 5 s. On success: done."""
     tries = 0
     while max_tries is None or tries < max_tries:
         tries += 1
@@ -103,10 +103,10 @@ def health_check_loop(max_tries=None):
         if r.get("ok"):
             print(f"laptop reachable at {base_url()}  camera={r.get('camera')} cv_mode={r.get('cv_mode')}")
             if tries > 1:
-                beep("ok")
+                haptic("ok")
             return True
         print(f"laptop NOT reachable at {base_url()} ({r.get('status')}: {r.get('detail', '')}); retry in {HEALTH_RETRY_S:.0f}s")
-        beep("boot_fail")
+        haptic("boot_fail")
         if max_tries is None or tries < max_tries:
             time.sleep(HEALTH_RETRY_S)
     return False

@@ -1,17 +1,17 @@
 // arduino-cue HARDWARE SELF-TEST. Runs entirely on the UNO Q, with no laptop and no network.
-// UNTESTED ON HARDWARE. Structure follows the official App Lab examples (see docs/UNO_Q_NOTES.md).
+// UNTESTED ON HARDWARE. Structure follows the official App Lab examples (see docs/HARDWARE_NOTES.md).
 //
 // What it does:
-//   boot     -> 1 short beep + wiring summary in App Lab "Serial Monitor" tab (repeated every 15 s)
-//   button   -> every debounced press: short beep + built-in LED flash + "BUTTON PRESSED #n"
+//   boot     -> 1 vibration pulse + wiring summary in App Lab "Serial Monitor" tab (repeated every 15 s)
+//   button   -> every debounced press: short pulse + built-in LED flash + "BUTTON PRESSED #n"
 //               every RAW pin change is printed too, so wrong polarity / floating pin is obvious
-//   sound A0 -> (set SOUND_SENSOR_CONNECTED true) value printed every 200 ms, loud -> double beep + "CLAP <v>"
+//   sound A0 -> (set SOUND_SENSOR_CONNECTED true) value printed every 200 ms, loud -> double pulse + "CLAP <v>"
 
 #include "Arduino_RouterBridge.h"
 
 // ======================= EDIT THESE IF NEEDED =======================
 const int BUTTON_PIN = 2;   // D2
-const int BUZZER_PIN = 3;   // D3
+const int MOTOR_PIN  = 3;   // D3 -> vibration motor module
 const int SOUND_PIN  = A0;  // A0
 
 // BUTTON_WIRING:
@@ -32,31 +32,33 @@ void configureButtonPin() {
   else pinMode(BUTTON_PIN, INPUT_PULLDOWN);  // internal pull-down keeps an unplugged pin from floating
 }
 
-// Buzzer: bit-banged ~2 kHz square wave. Works for PASSIVE and ACTIVE buzzers and does not need tone().
-void buzzerOn()  { digitalWrite(BUZZER_PIN, HIGH); }
-void buzzerOff() { digitalWrite(BUZZER_PIN, LOW); }
-void beepMs(unsigned long ms) {
-  unsigned long start = millis();
-  while (millis() - start < ms) {
-    buzzerOn();  delayMicroseconds(250);
-    buzzerOff(); delayMicroseconds(250);
-  }
-  buzzerOff();
+// Vibration motor MODULE on D3: HIGH = on. Non-blocking: a list of on/off steps driven from loop().
+unsigned long hapSteps[8]; int hapCount = 0, hapIndex = 0; unsigned long hapStepStart = 0; bool hapActive = false;
+void hapticStart(int pulses, unsigned long onMs, unsigned long gapMs = 120) {
+  hapCount = 0;
+  for (int i = 0; i < pulses && hapCount < 7; i++) { hapSteps[hapCount++] = onMs; if (i < pulses - 1) hapSteps[hapCount++] = gapMs; }
+  hapIndex = 0; hapStepStart = millis(); hapActive = hapCount > 0;
+  digitalWrite(MOTOR_PIN, hapActive ? HIGH : LOW);
 }
-void beeps(int n, unsigned long ms) {
-  for (int i = 0; i < n; i++) { beepMs(ms); if (i < n - 1) delay(120); }
+void hapticUpdate() {
+  if (!hapActive) return;
+  if (millis() - hapStepStart >= hapSteps[hapIndex]) {
+    hapIndex++; hapStepStart = millis();
+    if (hapIndex >= hapCount) { hapActive = false; digitalWrite(MOTOR_PIN, LOW); return; }
+    digitalWrite(MOTOR_PIN, (hapIndex % 2 == 0) ? HIGH : LOW);
+  }
 }
 
 void led(bool on) { digitalWrite(LED_BUILTIN, on ? LOW : HIGH); }  // UNO Q built-in LED is active LOW
 
 void printWiring() {
   Monitor.println("==== arduino-cue SELF-TEST (UNTESTED ON HARDWARE) ====");
-  Monitor.println("Button  -> D2   Buzzer -> D3   Sound sensor (optional) -> A0");
+  Monitor.println("Button  -> D2   Vibration motor module -> D3   Sound sensor (optional) -> A0");
   Monitor.println("Power modules from 3.3V (Grove Base Shield switch at 3V3), GND to GND.");
   if (BUTTON_WIRING == 0) Monitor.println("BUTTON_WIRING=0 (module): expect raw 0 idle, 1 pressed");
   else Monitor.println("BUTTON_WIRING=1 (bare button to GND, pull-up): expect raw 1 idle, 0 pressed");
   Monitor.print("Sound sensor: "); Monitor.println(SOUND_SENSOR_CONNECTED ? "ON (A0 every 200ms)" : "OFF");
-  Monitor.println("Press the button: you should hear a beep and see BUTTON PRESSED #n");
+  Monitor.println("Press the button: you should feel a pulse and see BUTTON PRESSED #n");
 }
 
 int rawState;               // last raw reading
@@ -67,8 +69,8 @@ unsigned long rawChangesThisSecond = 0, secondStart = 0;
 unsigned long lastSoundPrint = 0, lastClap = 0, lastWiringPrint = 0;
 
 void setup() {
-  pinMode(BUZZER_PIN, OUTPUT);
-  buzzerOff();
+  pinMode(MOTOR_PIN, OUTPUT);
+  digitalWrite(MOTOR_PIN, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
   led(false);
   configureButtonPin();
@@ -77,7 +79,7 @@ void setup() {
   Monitor.begin();
   delay(300);
 
-  beepMs(100);  // BOOT BEEP: if you hear this, the buzzer wiring is OK
+  hapticStart(1, 150);  // BOOT PULSE: if you feel this, the motor wiring is OK
   printWiring();
 
   rawState = stableState = digitalRead(BUTTON_PIN);
@@ -89,6 +91,8 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+  hapticUpdate();
+  if (!hapActive) led(false);
 
   // ---- button: raw changes + debounce ----
   int r = digitalRead(BUTTON_PIN);
@@ -104,7 +108,7 @@ void loop() {
     if (pressed) {
       pressCount++;
       Monitor.print("BUTTON PRESSED #"); Monitor.println(pressCount);
-      led(true); beepMs(80); led(false);
+      led(true); hapticStart(1, 150);
     } else {
       Monitor.println("button released");
     }
@@ -124,7 +128,7 @@ void loop() {
     if (v > CLAP_THRESHOLD && now - lastClap > 1000) {
       lastClap = now;
       Monitor.print("CLAP "); Monitor.println(v);
-      beeps(2, 80);
+      hapticStart(2, 100);
     }
   }
 

@@ -7,3 +7,4 @@ __pycache__/
 venv/
 .pytest_cache/
 *.zip
+esp32cam_firmware/secrets.h

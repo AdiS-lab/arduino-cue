@@ -22,7 +22,17 @@ HOST = _env("HOST", "0.0.0.0")          # 0.0.0.0 = reachable from UNO Q / phone
 PORT = _env("PORT", 8000, int)
 
 # ---- Camera ---------------------------------------------------------------
-CAMERA_SOURCE = _env("CAMERA_SOURCE", "usb")      # "usb" | "mock"
+CAMERA_SOURCE = _env("CAMERA_SOURCE", "esp32")    # "esp32" (primary ring) | "usb" (backup: Inland/C270) | "mock"
+
+# ESP32-CAM (primary). IP is printed on the ESP32 Serial Monitor at boot; can also be changed in the UI.
+ESP32_IP = _env("ESP32_IP", "")
+ESP32_HTTP_PORT = _env("ESP32_HTTP_PORT", 80, int)     # /capture /control /status /haptic /cue
+ESP32_STREAM_PORT = _env("ESP32_STREAM_PORT", 81, int) # /stream
+ESP32_TIMEOUT_S = _env("ESP32_TIMEOUT_S", 3.0, float)
+BURST_MODE = _env("BURST_MODE", "snapshot")            # "snapshot" (repeated GET /capture) | "stream"
+HAPTIC_FORWARD = _env("HAPTIC_FORWARD", True, bool)    # ble_remote/keyboard/ui triggers -> ESP32 /haptic
+
+# USB camera (backup path)
 CAMERA_INDEX = _env("CAMERA_INDEX", 0, int)       # 0-4; run laptop\find_camera.py to pick
 CAMERA_BACKEND = _env("CAMERA_BACKEND", "DSHOW")  # "DSHOW" | "MSMF" | "ANY"
 CAMERA_WIDTH = _env("CAMERA_WIDTH", 1280, int)    # falls back to 640x480 if refused

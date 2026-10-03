@@ -4,4 +4,5 @@ opencv-python>=4.8
 numpy>=1.24
 requests>=2.31
 pyttsx3>=2.90
+keyboard>=0.13      # Bluetooth ring remote hotkey (laptop\ble_remote.py)
 python-multipart>=0.0.9   # only for tools/dummy_cv_server.py

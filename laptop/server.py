@@ -25,8 +25,9 @@ import labels
 import speak
 from capture import Camera
 
-PIPELINE_TIMEOUT_S = 4.5   # the UNO Q gives up after 5 s
-SOURCES = {"button", "keyboard", "ui", "clap"}
+PIPELINE_TIMEOUT_S = 4.5   # the ring (ESP32 / UNO Q) gives up after 5 s
+SOURCES = {"ring", "ble_remote", "button", "keyboard", "ui", "clap"}
+DEVICES = {"esp32cam", "unoq", "laptop"}
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -69,7 +70,7 @@ async def log_event(source, status, ts, **extra):
     ev = {"type": "event", "source": source, "status": status, "ts": ts, "server_ts": int(time.time() * 1000), **extra}
     events.append(ev)
     del events[:-100]
-    print(f"[event] {source:8s} {status:8s} {extra.get('label', '')}")
+    print(f"[event] {source:10s} {extra.get('device', ''):8s} {status:8s} {extra.get('label', '')}")
     await broadcast(ev)
 
 
@@ -78,7 +79,8 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     await ws.send_json({"type": "status", "camera": camera.status(), "cv_mode": cv_adapter.mode(),
-                        "ntfy": bool(config.NTFY_TOPIC), "events": events[-30:], "recent": recent[-12:]})
+                        "ntfy": bool(config.NTFY_TOPIC), "events": events[-30:], "recent": recent[-12:],
+                        "camera_source": config.CAMERA_SOURCE})
     try:
         while True:
             await ws.receive_text()   # we don't expect messages; keeps the socket open
@@ -102,6 +104,43 @@ def _pipeline(capture_id: str) -> dict:
     return {**result, "image_url": f"/captures/{mid}" if mid else ""}
 
 
+DEVICE_BY_SOURCE = {"ring": "esp32cam", "button": "unoq", "clap": "unoq"}
+HAPTIC_SOURCES = {"ble_remote", "keyboard", "ui"}   # the ring didn't send these, so tell it to vibrate
+device_state = {"last_trigger": None, "last_haptic": None}
+
+
+def _esp32():
+    """The ESP32 source if the ring camera is in use, else None."""
+    src = getattr(camera, "src", None)
+    return src if src is not None and hasattr(src, "haptic") and getattr(src, "ip", "") else None
+
+
+def send_haptic(pattern: str) -> dict:
+    """Ask the ESP32 ring to vibrate. Never raises; result is shown in the UI Device panel."""
+    esp = _esp32()
+    if esp is None:
+        res = {"ok": False, "pattern": pattern, "reason": "no ESP32 configured"}
+    else:
+        try:
+            res = esp.haptic(pattern)
+        except Exception as e:
+            res = {"ok": False, "pattern": pattern, "reason": f"ESP32 unreachable ({type(e).__name__})"}
+    device_state["last_haptic"] = {**res, "server_ts": int(time.time() * 1000)}
+    return res
+
+
+async def _finish(source, device, ts, resp, **extra):
+    """Log the final event, forward haptics for non-ring triggers, return the HTTP response."""
+    status = resp["status"]
+    device_state["last_trigger"] = {"source": source, "device": device, "status": status,
+                                    "label": resp["label"], "server_ts": int(time.time() * 1000)}
+    await log_event(source, status, ts, device=device, capture_id=resp["capture_id"], label=resp["label"], **extra)
+    if config.HAPTIC_FORWARD and source in HAPTIC_SOURCES and status != "busy":
+        h = await asyncio.to_thread(send_haptic, "error" if status == "error" else status)
+        await broadcast({"type": "device", **device_state, "haptic_result": h})
+    return resp
+
+
 @app.post("/trigger")
 async def trigger(request: Request):
     global busy
@@ -110,29 +149,28 @@ async def trigger(request: Request):
     except Exception:
         body = {}
     source = body.get("source") if body.get("source") in SOURCES else "ui"
+    device = body.get("device") if body.get("device") in DEVICES else DEVICE_BY_SOURCE.get(source, "laptop")
     ts = body.get("ts") or int(time.time() * 1000)
 
     if busy:
-        await log_event(source, "busy", ts)
-        return {"status": "busy", "label": "", "confidence": 0.0, "capture_id": ""}
+        return await _finish(source, device, ts, {"status": "busy", "label": "", "confidence": 0.0, "capture_id": ""})
 
     busy = True
     capture_id = time.strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
     try:
-        await log_event(source, "received", ts, capture_id=capture_id)
+        await log_event(source, "received", ts, device=device, capture_id=capture_id)
         t0 = time.time()
+        err = {"status": "error", "label": "", "confidence": 0.0, "capture_id": capture_id}
         try:
             r = await asyncio.wait_for(asyncio.to_thread(_pipeline, capture_id), PIPELINE_TIMEOUT_S)
         except asyncio.TimeoutError:
-            await log_event(source, "error", ts, capture_id=capture_id, error="timeout")
-            return {"status": "error", "label": "", "confidence": 0.0, "capture_id": capture_id}
+            return await _finish(source, device, ts, err, error="timeout")
         except Exception as e:
-            await log_event(source, "error", ts, capture_id=capture_id, error=str(e))
-            return {"status": "error", "label": "", "confidence": 0.0, "capture_id": capture_id}
+            return await _finish(source, device, ts, err, error=str(e))
 
         status = "ok" if r["label"] else "none"
         disp = labels.display(r["label"])
-        det = {"type": "detection", "status": status, "source": source, "capture_id": capture_id,
+        det = {"type": "detection", "status": status, "source": source, "device": device, "capture_id": capture_id,
                "label": r["label"], "confidence": r["confidence"], "word": disp["word"], "emoji": disp["emoji"],
                "image_url": r["image_url"], "ms": int((time.time() - t0) * 1000), "ts": ts}
         if status == "ok":
@@ -140,15 +178,40 @@ async def trigger(request: Request):
             del recent[:-50]
             speak.say(disp["word"])
         await broadcast(det)
-        await log_event(source, status, ts, capture_id=capture_id, label=r["label"])
-        return {"status": status, "label": r["label"], "confidence": r["confidence"], "capture_id": capture_id}
+        return await _finish(source, device, ts, {"status": status, "label": r["label"],
+                                                   "confidence": r["confidence"], "capture_id": capture_id})
     finally:
         busy = False
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "camera": camera.status()["camera"], "cv_mode": cv_adapter.mode()}
+    return {"ok": True, "camera": camera.status()["camera"], "cv_mode": cv_adapter.mode(),
+            "camera_source": config.CAMERA_SOURCE}
+
+
+# ---------------------------------------------------------------- device (ESP32 ring)
+@app.get("/device")
+def device_info():
+    esp = _esp32()
+    info, reachable = None, False
+    if esp is not None:
+        try:
+            info, reachable = esp.cue_info(), True
+        except Exception as e:
+            info = {"error": type(e).__name__}
+    return {"camera_source": config.CAMERA_SOURCE, "esp32_ip": getattr(esp, "ip", ""), "reachable": reachable,
+            "info": info, **device_state}
+
+
+@app.post("/device/haptic")
+async def device_haptic(request: Request):
+    pattern = str((await request.json()).get("pattern", ""))
+    if pattern not in ("ok", "none", "error", "boot_fail"):
+        raise HTTPException(400, "pattern must be ok|none|error|boot_fail")
+    res = await asyncio.to_thread(send_haptic, pattern)
+    await broadcast({"type": "device", **device_state})
+    return res
 
 
 # ---------------------------------------------------------------- camera
@@ -252,10 +315,12 @@ def lan_ips():
 
 
 if __name__ == "__main__":
-    print(f"camera={config.CAMERA_SOURCE} index={config.CAMERA_INDEX} cv_mode={config.CV_MODE} "
+    cam = f"esp32 @ {config.ESP32_IP or '(set ESP32_IP!)'}" if config.CAMERA_SOURCE == "esp32" else \
+        f"{config.CAMERA_SOURCE} index={config.CAMERA_INDEX}"
+    print(f"camera={cam} cv_mode={config.CV_MODE} "
           f"ntfy={'on' if config.NTFY_TOPIC else 'off'}")
     for ip in lan_ips():
         print(f"  UI:      http://{ip}:{config.PORT}/      <- open on phone (same hotspot)")
-        print(f"  UNO Q:   LAPTOP_IP = \"{ip}\"  PORT = {config.PORT}")
+        print(f"  ring:    #define LAPTOP_IP \"{ip}\"  (esp32cam_firmware/secrets.h; UNO Q: LAPTOP_IP in main.py)  PORT {config.PORT}")
     print(f"  local:   http://127.0.0.1:{config.PORT}/")
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="warning")

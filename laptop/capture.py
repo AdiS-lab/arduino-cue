@@ -4,6 +4,7 @@ The camera streams continuously into memory and nothing is written to disk.
 Only burst() saves frames, to captures/<capture_id>_<i>.jpg.
 """
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -29,11 +30,24 @@ DEFAULT_SETTINGS = {
     "exposure": -6.0,       # used when exposure_auto is False (Windows DSHOW: log2 seconds, e.g. -6)
     "sharpness": None,
     "warmup_frames": config.WARMUP_FRAMES,
+    # ESP32-CAM: forwarded to http://<esp32_ip>/control?var=<k>&val=<v>. None = leave the camera's value.
+    "esp32_ip": config.ESP32_IP,
+    "burst_mode": config.BURST_MODE,  # snapshot | stream
+    "framesize": None,      # OV2640: 5=QVGA 320x240, 8=VGA 640x480, 9=SVGA 800x600, 10=XGA, 13=UXGA
+    "quality": None,        # JPEG 4-63, lower = better
+    "contrast": None,       # -2..2 (brightness is shared with USB: -2..2 on ESP32)
+    "hmirror": None,
+    "vflip": None,
     "burst_n": config.BURST_N,
     "burst_gap_ms": config.BURST_GAP_MS,
 }
-REOPEN_KEYS = {"camera_index", "backend", "width", "height", "mjpg"}
-PROP_KEYS = {"brightness", "exposure_auto", "exposure", "sharpness"}
+REOPEN_KEYS = {"camera_index", "backend", "width", "height", "mjpg", "esp32_ip"}
+ESP32_CONTROL_KEYS = ("framesize", "quality", "brightness", "contrast", "hmirror", "vflip")
+PROP_KEYS = {"brightness", "exposure_auto", "exposure", "sharpness", *ESP32_CONTROL_KEYS}
+
+
+ENV_OVERRIDES = {"esp32_ip": "ESP32_IP", "burst_mode": "BURST_MODE", "camera_index": "CAMERA_INDEX",
+                 "backend": "CAMERA_BACKEND", "width": "CAMERA_WIDTH", "height": "CAMERA_HEIGHT"}
 
 
 def load_settings(path: Path = config.CAMERA_SETTINGS_FILE) -> dict:
@@ -43,6 +57,10 @@ def load_settings(path: Path = config.CAMERA_SETTINGS_FILE) -> dict:
             s.update({k: v for k, v in json.loads(path.read_text()).items() if k in DEFAULT_SETTINGS})
         except Exception as e:
             print(f"[camera] ignoring bad {path.name}: {e}")
+    # An env var that is explicitly set beats the saved file (e.g. a new ESP32_IP after the hotspot reassigns IPs).
+    for key, env in ENV_OVERRIDES.items():
+        if os.environ.get(env):
+            s[key] = DEFAULT_SETTINGS[key]
     return s
 
 
@@ -77,6 +95,18 @@ def validate(updates: dict) -> dict:
             v = min(3.0, max(1.0, float(v)))
         elif k in ("brightness", "sharpness", "exposure"):
             v = None if v in (None, "", "null") else float(v)
+        elif k == "esp32_ip":
+            v = str(v or "").strip().removeprefix("http://").rstrip("/")
+        elif k == "burst_mode":
+            if v not in ("snapshot", "stream"):
+                raise ValueError("burst_mode must be snapshot or stream")
+        elif k in ("framesize", "quality", "contrast"):
+            v = None if v in (None, "", "null") else int(v)
+            lim = {"framesize": (0, 13), "quality": (4, 63), "contrast": (-2, 2)}[k]
+            if v is not None and not lim[0] <= v <= lim[1]:
+                raise ValueError(f"{k} must be {lim[0]}..{lim[1]}")
+        elif k in ("hmirror", "vflip"):
+            v = None if v in (None, "", "null") else (v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes"))
         out[k] = v
     return out
 
@@ -219,13 +249,132 @@ class USBSource:
         return dict(self._info)
 
 
+class ESP32Source:
+    """ESP32-CAM running esp32cam_firmware (CameraWebServer endpoints) over Wi-Fi.
+
+    Preview/grab thread reads MJPEG from http://IP:81/stream. Bursts use GET http://IP/capture (snapshot mode).
+    """
+
+    def __init__(self):
+        import requests
+        self.requests = requests
+        self.ip = ""
+        self.resp = None
+        self.buf = b""
+        self.it = None
+        self.current_name = ""   # mock server only: X-Sample header -> mock CV label
+        self._info = {}
+
+    def _url(self, path, stream=False):
+        host = self.ip if ":" in self.ip else f"{self.ip}:{config.ESP32_STREAM_PORT if stream else config.ESP32_HTTP_PORT}"
+        return f"http://{host}{path}"
+
+    def open(self, s):
+        self.release()
+        self.ip = s.get("esp32_ip") or ""
+        self._info = {"backend": f"ESP32 {self.ip or '(no ESP32_IP)'}", "props": {}}
+        if not self.ip:
+            self._info["error"] = "ESP32_IP not set (env var or UI camera settings)"
+            time.sleep(1.0)
+            return False
+        try:
+            st = self.requests.get(self._url("/status"), timeout=config.ESP32_TIMEOUT_S).json()
+            self._info["esp32_status"] = {k: st.get(k) for k in ("framesize", "quality", "brightness", "contrast", "hmirror", "vflip")}
+            self.apply_props(s)
+            self.resp = self.requests.get(self._url("/stream", stream=True), stream=True,
+                                          timeout=(config.ESP32_TIMEOUT_S, 5))
+            self.resp.raise_for_status()
+            self.it = self.resp.iter_content(chunk_size=8192)
+            return True
+        except Exception as e:
+            self._info["error"] = f"ESP32 not reachable at {self.ip}: {type(e).__name__}"
+            self.release()
+            time.sleep(1.0)
+            return False
+
+    def apply_props(self, s):
+        report = {}
+        for k in ESP32_CONTROL_KEYS:
+            v = s.get(k)
+            if v is None:
+                continue
+            val = int(v) if not isinstance(v, bool) else int(v)
+            try:
+                ok = self.requests.get(self._url("/control"), params={"var": k, "val": val},
+                                       timeout=config.ESP32_TIMEOUT_S).status_code == 200
+            except Exception:
+                ok = False
+            report[k] = {"requested": val, "set_ok": ok, "readback": None, "accepted": False}
+        if report:
+            try:
+                st = self.requests.get(self._url("/status"), timeout=config.ESP32_TIMEOUT_S).json()
+                for k, r in report.items():
+                    r["readback"] = st.get(k)
+                    r["accepted"] = r["set_ok"] and st.get(k) == r["requested"]
+            except Exception:
+                pass
+        self._info["props"] = report
+        return report
+
+    def read(self):
+        if self.it is None:
+            time.sleep(0.2)
+            return False, None
+        try:
+            while True:
+                a = self.buf.find(b"\xff\xd8")
+                b = self.buf.find(b"\xff\xd9", a + 2) if a >= 0 else -1
+                if a >= 0 and b >= 0:
+                    jpg, self.buf = self.buf[a:b + 2], self.buf[b + 2:]
+                    frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    self._info["width"], self._info["height"] = frame.shape[1], frame.shape[0]
+                    return True, frame
+                chunk = next(self.it)
+                # mock server tags each part with X-Sample: <name>
+                i = chunk.find(b"X-Sample: ")
+                if i >= 0:
+                    self.current_name = chunk[i + 10:chunk.find(b"\r\n", i)].decode(errors="ignore")
+                self.buf += chunk
+                if len(self.buf) > 4_000_000:
+                    self.buf = b""
+        except Exception:
+            self.release()
+            return False, None
+
+    def snapshot(self):
+        r = self.requests.get(self._url("/capture"), timeout=config.ESP32_TIMEOUT_S)
+        r.raise_for_status()
+        self.current_name = r.headers.get("X-Sample", self.current_name)
+        return cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+
+    def haptic(self, pattern: str) -> dict:
+        r = self.requests.get(self._url("/haptic"), params={"pattern": pattern}, timeout=1.5)
+        return {"ok": r.status_code == 200, "pattern": pattern}
+
+    def cue_info(self) -> dict:
+        return self.requests.get(self._url("/cue"), timeout=1.5).json()
+
+    def release(self):
+        if self.resp is not None:
+            try:
+                self.resp.close()
+            except Exception:
+                pass
+        self.resp, self.it, self.buf = None, None, b""
+
+    def info(self):
+        return dict(self._info)
+
+
 # --------------------------------------------------------------------------
 class Camera:
     def __init__(self, source: str = config.CAMERA_SOURCE, settings_file: Path = config.CAMERA_SETTINGS_FILE):
         self.source_kind = source
         self.settings_file = settings_file
         self.settings = load_settings(settings_file)
-        self.src = MockSource() if source == "mock" else USBSource()
+        self.src = {"mock": MockSource, "esp32": ESP32Source}.get(source, USBSource)()
         self.lock = threading.Lock()
         self.frame = None          # latest processed frame
         self.frame_id = 0
@@ -311,6 +460,8 @@ class Camera:
         return {
             "camera": bool(self.ok and not stale),
             "source": self.source_kind,
+            "esp32_ip": self.settings.get("esp32_ip", ""),
+            "burst_mode": self.settings.get("burst_mode"),
             "index": self.settings["camera_index"],
             "backend": info.get("backend"),
             "actual_width": info.get("width"),
@@ -339,7 +490,7 @@ class Camera:
             print(f"[camera] could not save settings: {e}")
         if REOPEN_KEYS & clean.keys():
             self._reopen.set()
-        elif PROP_KEYS & clean.keys() and isinstance(self.src, USBSource):
+        elif PROP_KEYS & clean.keys() and hasattr(self.src, "apply_props") and self.ok:
             self.src.apply_props(s)
         return {"settings": s, "status": self.status()}
 
@@ -351,6 +502,18 @@ class Camera:
         gap = (gap_ms if gap_ms is not None else s["burst_gap_ms"]) / 1000.0
         frames, paths, last_id = [], [], -1
         deadline = time.time() + timeout_s
+        if isinstance(self.src, ESP32Source) and s.get("burst_mode", "snapshot") == "snapshot":
+            while len(frames) < n and time.time() < deadline:
+                try:
+                    f = self.src.snapshot()
+                    if f is not None:
+                        frames.append(process(f, s))
+                except Exception as e:
+                    self.last_error = f"snapshot failed: {type(e).__name__}"
+                    time.sleep(0.05)
+                if len(frames) < n:
+                    time.sleep(gap)
+            n = 0  # skip the stream loop below
         while len(frames) < n and time.time() < deadline:
             f, fid = self.latest()
             if f is None or fid == last_id:

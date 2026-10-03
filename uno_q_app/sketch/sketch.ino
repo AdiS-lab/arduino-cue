@@ -1,14 +1,14 @@
 // arduino-cue main app (MCU side). UNTESTED ON HARDWARE.
 // Button (D2) -> Bridge.notify("button_pressed", n) -> Python -> laptop.
-// Python replies with Bridge.notify("play", pattern) -> buzzer (D3).
-// If Python never replies within REPLY_TIMEOUT_MS, the MCU plays 1 long beep by itself,
+// Python replies with Bridge.notify("play", pattern) -> vibration motor (D3).
+// If Python never replies within REPLY_TIMEOUT_MS, the MCU plays 1 long pulse by itself,
 // so a press always produces feedback.
 
 #include "Arduino_RouterBridge.h"
 
 // ======================= EDIT THESE IF NEEDED =======================
 const int BUTTON_PIN = 2;
-const int BUZZER_PIN = 3;
+const int MOTOR_PIN  = 3;   // vibration motor module
 const int SOUND_PIN  = A0;
 const int BUTTON_WIRING = 0;        // 0 = Grove/module (active HIGH), 1 = bare button to GND (pull-up, active LOW)
 const bool CLAP_ENABLED = false;    // optional sound-sensor trigger on A0
@@ -23,17 +23,21 @@ void configureButtonPin() {
   else pinMode(BUTTON_PIN, INPUT_PULLDOWN);   // if this fails to compile, use INPUT
 }
 
-// Bit-banged ~2 kHz square wave: works with passive and active buzzers, no tone() needed.
-void beepMs(unsigned long ms) {
-  unsigned long start = millis();
-  while (millis() - start < ms) {
-    digitalWrite(BUZZER_PIN, HIGH); delayMicroseconds(250);
-    digitalWrite(BUZZER_PIN, LOW);  delayMicroseconds(250);
-  }
-  digitalWrite(BUZZER_PIN, LOW);
+// Vibration motor MODULE on D3: HIGH = on. Non-blocking: a list of on/off steps driven from loop().
+unsigned long hapSteps[8]; int hapCount = 0, hapIndex = 0; unsigned long hapStepStart = 0; bool hapActive = false;
+void hapticStart(int pulses, unsigned long onMs, unsigned long gapMs = 120) {
+  hapCount = 0;
+  for (int i = 0; i < pulses && hapCount < 7; i++) { hapSteps[hapCount++] = onMs; if (i < pulses - 1) hapSteps[hapCount++] = gapMs; }
+  hapIndex = 0; hapStepStart = millis(); hapActive = hapCount > 0;
+  digitalWrite(MOTOR_PIN, hapActive ? HIGH : LOW);
 }
-void beeps(int n, unsigned long ms) {
-  for (int i = 0; i < n; i++) { beepMs(ms); if (i < n - 1) delay(120); }
+void hapticUpdate() {
+  if (!hapActive) return;
+  if (millis() - hapStepStart >= hapSteps[hapIndex]) {
+    hapIndex++; hapStepStart = millis();
+    if (hapIndex >= hapCount) { hapActive = false; digitalWrite(MOTOR_PIN, LOW); return; }
+    digitalWrite(MOTOR_PIN, (hapIndex % 2 == 0) ? HIGH : LOW);
+  }
 }
 
 // ---- Python -> MCU: pattern request. provide_safe runs this in loop() context; we only store it.
@@ -48,11 +52,11 @@ void play(String pattern) {
 
 void runPattern(int p) {
   switch (p) {
-    case 1: beepMs(100); break;          // ok: 1 short
-    case 2: beeps(2, 100); break;        // none: 2 short
-    case 3: beepMs(600); break;          // error / timeout / unreachable: 1 long
-    case 4: beeps(3, 100); break;        // laptop /health unreachable at boot: 3 short
-    default: break;                      // busy: no beep
+    case 1: hapticStart(1, 150); break;  // ok: 1 x 150 ms
+    case 2: hapticStart(2, 100); break;  // none: 2 x 100 ms
+    case 3: hapticStart(1, 600); break;  // error / timeout / unreachable: 1 x 600 ms
+    case 4: hapticStart(3, 100); break;  // laptop /health unreachable at boot: 3 pulses
+    default: break;                      // busy: nothing
   }
 }
 
@@ -64,17 +68,17 @@ bool waitingReply = false;
 bool isPressed(int level) { return (level == HIGH) == (BUTTON_WIRING == 0); }
 
 void setup() {
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  pinMode(MOTOR_PIN, OUTPUT);
+  digitalWrite(MOTOR_PIN, LOW);
   configureButtonPin();
 
   Bridge.begin();
   Monitor.begin();
   Bridge.provide_safe("play", play);
 
-  beepMs(100);   // boot: 1 short beep (no network needed)
+  hapticStart(1, 150);   // boot: 1 pulse (no network needed)
   rawState = stableState = digitalRead(BUTTON_PIN);
-  Monitor.println("arduino-cue main app (MCU). Button D2, buzzer D3. UNTESTED ON HARDWARE.");
+  Monitor.println("arduino-cue main app (MCU). Button D2, vibration motor D3. UNTESTED ON HARDWARE.");
 }
 
 void sendTrigger(const char* kind, unsigned long value) {
@@ -98,6 +102,7 @@ void sendTrigger(const char* kind, unsigned long value) {
 
 void loop() {
   unsigned long now = millis();
+  hapticUpdate();
 
   int r = digitalRead(BUTTON_PIN);
   if (r != rawState) { rawState = r; lastRawChange = now; }
@@ -118,7 +123,7 @@ void loop() {
     runPattern(p);
   } else if (waitingReply && now - waitingSince > REPLY_TIMEOUT_MS) {
     waitingReply = false;
-    Monitor.println("BUTTON OK, NO REPLY FROM LINUX/LAPTOP -> long beep");
+    Monitor.println("BUTTON OK, NO REPLY FROM LINUX/LAPTOP -> long pulse");
     runPattern(3);
   }
 }

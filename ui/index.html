@@ -49,6 +49,10 @@
   .grid input, .grid select { font:inherit; font-size:16px; color:var(--fg); background:var(--bg); border:1px solid var(--line);
            border-radius:8px; min-height:40px; padding:4px 8px; width:100%; }
   .grid input[type=checkbox] { width:28px; min-height:28px; }
+  #camform.src-esp32 .usb, #camform:not(.src-esp32) .esp { display:none; }
+  .dev { display:grid; grid-template-columns: auto 1fr; gap:4px 12px; font-size:16px; margin-bottom:10px; }
+  .dev dt { color:var(--muted); } .dev dd { margin:0; overflow-wrap:anywhere; }
+  #devbtns button { flex:1 1 90px; font-size:18px; min-height:48px; }
   #camstatus { margin-top:10px; font:13px/1.4 ui-monospace, Consolas, monospace; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
 </style>
 </head>
@@ -80,21 +84,41 @@
     </section>
 
     <section>
+      <h2>Device <span id="p-dev" class="pill">ring ?</span></h2>
+      <dl class="dev">
+        <dt>Camera</dt><dd id="dev-src">—</dd>
+        <dt>Ring</dt><dd id="dev-info">—</dd>
+        <dt>Last trigger</dt><dd id="dev-trig">—</dd>
+        <dt>Last haptic</dt><dd id="dev-hap">—</dd>
+      </dl>
+      <div class="row" id="devbtns">
+        <button data-p="ok">Test ok</button><button data-p="none">Test none</button><button data-p="error">Test error</button>
+      </div>
+    </section>
+
+    <section>
       <details id="camdetails">
         <summary>Camera settings</summary>
         <div class="grid" id="camform">
-          <label>Index <select name="camera_index"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
-          <label>Backend <select name="backend"><option>DSHOW</option><option>MSMF</option><option>ANY</option></select></label>
-          <label>Resolution <select name="res"><option value="1280x720">1280×720</option><option value="640x480">640×480</option><option value="1920x1080">1920×1080</option></select></label>
-          <label>MJPG <input type="checkbox" name="mjpg"></label>
+          <label class="esp">ESP32 IP <input type="text" name="esp32_ip" placeholder="e.g. 172.20.10.5" inputmode="decimal"></label>
+          <label class="esp">Burst mode <select name="burst_mode"><option value="snapshot">snapshot (/capture)</option><option value="stream">stream</option></select></label>
+          <label class="esp">Frame size <select name="framesize"><option value="">camera default</option><option value="5">QVGA 320×240</option><option value="8">VGA 640×480</option><option value="9">SVGA 800×600</option><option value="10">XGA 1024×768</option><option value="13">UXGA 1600×1200</option></select></label>
+          <label class="esp">JPEG quality (4-63, low=better) <input type="number" name="quality" min="4" max="63"></label>
+          <label class="esp">Contrast (-2..2) <input type="number" name="contrast" min="-2" max="2"></label>
+          <label class="esp">Mirror (hmirror) <select name="hmirror"><option value="">default</option><option value="true">on</option><option value="false">off</option></select></label>
+          <label class="esp">Vertical flip (vflip) <select name="vflip"><option value="">default</option><option value="true">on</option><option value="false">off</option></select></label>
+          <label class="usb">Index <select name="camera_index"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label class="usb">Backend <select name="backend"><option>DSHOW</option><option>MSMF</option><option>ANY</option></select></label>
+          <label class="usb">Resolution <select name="res"><option value="1280x720">1280×720</option><option value="640x480">640×480</option><option value="1920x1080">1920×1080</option></select></label>
+          <label class="usb">MJPG <input type="checkbox" name="mjpg"></label>
           <label>Rotate <select name="rotate"><option>0</option><option>90</option><option>180</option><option>270</option></select></label>
           <label>Flip <select name="flip"><option value="none">none</option><option value="h">horizontal</option><option value="v">vertical</option></select></label>
           <label>Zoom <span id="zoomv"></span><input type="range" name="zoom" min="1" max="3" step="0.1"></label>
-          <label>Brightness (blank = default) <input type="number" name="brightness" step="1"></label>
-          <label>Auto exposure <input type="checkbox" name="exposure_auto"></label>
-          <label>Exposure (manual) <input type="number" name="exposure" step="1"></label>
-          <label>Sharpness (blank = default) <input type="number" name="sharpness" step="1"></label>
-          <label>Warm-up frames <input type="number" name="warmup_frames" min="0" max="60"></label>
+          <label>Brightness (blank = default; ESP32 -2..2) <input type="number" name="brightness" step="1"></label>
+          <label class="usb">Auto exposure <input type="checkbox" name="exposure_auto"></label>
+          <label class="usb">Exposure (manual) <input type="number" name="exposure" step="1"></label>
+          <label class="usb">Sharpness (blank = default) <input type="number" name="sharpness" step="1"></label>
+          <label class="usb">Warm-up frames <input type="number" name="warmup_frames" min="0" max="60"></label>
           <label>Burst N <input type="number" name="burst_n" min="1" max="30"></label>
           <label>Burst gap ms <input type="number" name="burst_gap_ms" min="0" max="1000" step="10"></label>
         </div>
@@ -194,7 +218,7 @@ $("#capture").onclick = async () => {
 function logEvent(ev) {
   const d = document.createElement("div");
   const t = new Date(ev.server_ts || ev.ts || Date.now()).toLocaleTimeString();
-  d.innerHTML = `${t} <b>${ev.source}</b> <span class="s-${ev.status}">${ev.status}</span> `;
+  d.innerHTML = `${t} <b>${ev.source}</b>${ev.device ? ` <i>${ev.device}</i>` : ""} <span class="s-${ev.status}">${ev.status}</span> `;
   d.appendChild(document.createTextNode(ev.label || ev.error || ""));
   $("#log").prepend(d);
   while ($("#log").children.length > 200) $("#log").lastChild.remove();
@@ -212,7 +236,9 @@ function showDetection(d) {
 function setPill(id, text, good) { const p = $(id); p.textContent = text; p.className = "pill " + (good ? "ok" : "bad"); }
 function showCamStatus(c) {
   if (!c) return;
-  setPill("#p-cam", c.camera ? `camera ${c.source} #${c.index}` : "camera DOWN", c.camera);
+  const where = c.source === "esp32" ? (c.esp32_ip || "no IP") : c.source === "usb" ? `#${c.index}` : "";
+  setPill("#p-cam", c.camera ? `camera ${c.source} ${where}` : `camera ${c.source} DOWN`, c.camera);
+  form.classList.toggle("src-esp32", c.source === "esp32");
   const props = Object.entries(c.props || {}).map(([k, v]) => `${k}: ${v.accepted ? "accepted" : "IGNORED"} (readback ${v.readback})`).join("\n");
   $("#camstatus").textContent =
     `actual: ${c.actual_width}x${c.actual_height} via ${c.backend}  reconnects: ${c.reconnects}` +
@@ -226,7 +252,7 @@ function fillForm(s) {
   for (const el of form.querySelectorAll("[name]")) {
     if (el.name === "res") { el.value = `${s.width}x${s.height}`; continue; }
     const v = s[el.name];
-    if (el.type === "checkbox") el.checked = !!v; else el.value = v === null || v === undefined ? "" : v;
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v === null || v === undefined ? "" : String(v);
   }
   $("#zoomv").textContent = `${Number(s.zoom).toFixed(1)}×`;
 }
@@ -238,15 +264,38 @@ form.addEventListener("change", async (e) => {
   if (el.name === "res") { const [w, h] = el.value.split("x").map(Number); body = { width: w, height: h }; }
   else if (el.type === "checkbox") body[el.name] = el.checked;
   else if (el.value === "" ) body[el.name] = null;
+  else if (el.name === "esp32_ip") body[el.name] = el.value;
   else body[el.name] = isNaN(Number(el.value)) ? el.value : Number(el.value);
   const { ok, j } = await post("/camera/settings", body);
   if (!ok) { msg(`Setting rejected: ${j.detail}`); return loadSettings(); }
   fillForm(j.settings); showCamStatus(j.status);
   // reload preview so a reopened camera / new size shows up
-  if (["camera_index", "backend", "width", "mjpg"].some(k => k in body)) $("#preview").src = "/preview.mjpg?t=" + Date.now();
+  if (["camera_index", "backend", "width", "mjpg", "esp32_ip"].some(k => k in body)) $("#preview").src = "/preview.mjpg?t=" + Date.now();
 });
 form.querySelector("[name=zoom]").addEventListener("input", (e) => $("#zoomv").textContent = `${Number(e.target.value).toFixed(1)}×`);
 loadSettings().catch(() => {});
+
+// ---------- device (ESP32 ring) ----------
+const ago = (ms) => ms ? `${Math.max(0, Math.round((Date.now() - ms) / 1000))} s ago` : "";
+function showDevice(d) {
+  if (d.camera_source !== undefined) {
+    const esp = d.camera_source === "esp32";
+    $("#dev-src").textContent = esp ? `ESP32-CAM ${d.esp32_ip || "(set ESP32 IP in Camera settings)"}` : `${d.camera_source} (backup / test)`;
+    if (esp) setPill("#p-dev", d.reachable ? "ring reachable" : "ring UNREACHABLE", d.reachable);
+    else setPill("#p-dev", "no ESP32", false);
+    const i = d.info || {};
+    $("#dev-info").textContent = d.reachable ? `presses ${i.presses} · rssi ${i.rssi} dBm · up ${i.uptime_s} s · sees laptop: ${i.laptop_reachable}` : (i.error || "—");
+  }
+  const t = d.last_trigger, h = d.last_haptic;
+  if (t) $("#dev-trig").textContent = `${t.source} (${t.device}) → ${t.status} ${t.label || ""} · ${ago(t.server_ts)}`;
+  if (h) $("#dev-hap").textContent = `${h.pattern}: ${h.ok ? "sent ✓" : "failed (" + (h.reason || "?") + ")"} · ${ago(h.server_ts)}`;
+}
+async function pollDevice() { try { showDevice(await (await fetch("/device")).json()); } catch {} }
+setInterval(pollDevice, 3000); pollDevice();
+document.querySelectorAll("#devbtns button").forEach(b => b.onclick = async () => {
+  const { j } = await post("/device/haptic", { pattern: b.dataset.p });
+  msg(j.ok ? `Ring vibrated: ${j.pattern}` : `Haptic failed: ${j.reason || j.detail}`); pollDevice();
+});
 
 // ---------- websocket ----------
 function connect() {
@@ -257,6 +306,7 @@ function connect() {
     const d = JSON.parse(m.data);
     if (d.type === "detection") showDetection(d);
     else if (d.type === "event") logEvent(d);
+    else if (d.type === "device") showDevice(d);
     else if (d.type === "status") {
       showCamStatus(d.camera);
       if (d.cv_mode) setPill("#p-cv", `cv ${d.cv_mode}`, true);
